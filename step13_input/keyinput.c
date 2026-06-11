@@ -23,6 +23,7 @@
 #include<linux/platform_device.h>
 #include<linux/input.h>
 #include<linux/interrupt.h>
+#include <linux/of_irq.h>
 
 #define KEYINOUT_NAME  "keyinput"
 
@@ -32,16 +33,18 @@ struct key_dev
     struct timer_list timer;
     int gpio_key;
     int irq_key;
+    spinlock_t lock; 
 };
 
 static struct key_dev key;
 
 static irqreturn_t key_interrupt(int irq, void *dev_id)
 {
+    printk(KERN_INFO "irq=%d triggered, key.irq_key=%d\n", irq, key.irq_key);
     if(key.irq_key != irq)
         return IRQ_NONE;
    
-    disable_irq_nosync(irq);
+  //  disable_irq_nosync(irq);
     mod_timer(&key.timer,jiffies + msecs_to_jiffies(15));
 
     return IRQ_HANDLED;
@@ -92,21 +95,30 @@ static int key_gpio_init(struct device_node *nd)
     return 0;
 }
 
+
 static void key_timer_function(struct timer_list *arg)
 {
     int val;
-
+    static int cnt = 0;
+    unsigned long flags;
+    cnt ++;
+    if(cnt > 10000)
+        cnt = 0;
+    printk(KERN_INFO "key_timer_function Run times %d\n", cnt);
     val = gpio_get_value(key.gpio_key);
-    input_report_key(key.idev,KEY_0,!val);
+    spin_lock_irqsave(&key.lock, flags);
+    input_report_key(key.idev, KEY_0, !val);
     input_sync(key.idev);
+    spin_unlock_irqrestore(&key.lock, flags);
 
-    enable_irq(key.irq_key);
+  //  enable_irq(key.irq_key);
 }
 
 static int atk_key_probe(struct platform_device *pdev)
 {
     int ret;
 
+    spin_lock_init(&key.lock);
     ret = key_gpio_init(pdev->dev.of_node);
     if(ret < 0)
     {
@@ -116,7 +128,7 @@ static int atk_key_probe(struct platform_device *pdev)
 
     timer_setup(&key.timer,key_timer_function,0);
 
-    key.idev = input_alloc_device();
+    key.idev = input_allocate_device();
     key.idev->name = KEYINOUT_NAME;
 
 #if 0
@@ -130,7 +142,8 @@ static int atk_key_probe(struct platform_device *pdev)
     key.idev->keybit[BIT_WORD(KEY_0)] |= BIT_MASK(KEY_0); 
 #endif
 
-    key.idev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REP);
+    // key.idev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REP);
+    key.idev->evbit[0] = BIT_MASK(EV_KEY);
     input_set_capability(key.idev, EV_KEY, KEY_0); 
 
     ret = input_register_device(key.idev);
